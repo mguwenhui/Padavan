@@ -1,0 +1,179 @@
+name: Build Padavan KVR
+
+on:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Enable tmate debugging'
+        required: false
+        default: 'no'
+
+jobs:
+  build:
+    name: Build KVR Firmware
+    runs-on: ubuntu-20.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - model: "JCG-AC860M"
+            name: "JCG-AC860M-KVR"
+
+          - model: "NETGEAR-BZV"
+            name: "NETGEAR-BZV-KVR"
+
+    steps:
+
+      # --------------------------------------------------
+      # 1. Checkout keke1023/Padavan
+      # --------------------------------------------------
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # --------------------------------------------------
+      # 2. Install build dependencies
+      # --------------------------------------------------
+      - name: Prepare environment
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            unzip \
+            libtool-bin \
+            curl \
+            cmake \
+            gperf \
+            gawk \
+            flex \
+            bison \
+            nano \
+            xxd \
+            fakeroot \
+            kmod \
+            cpio \
+            git \
+            python3-docutils \
+            gettext \
+            automake \
+            autopoint \
+            texinfo \
+            build-essential \
+            help2man \
+            pkg-config \
+            zlib1g-dev \
+            libgmp3-dev \
+            libmpc-dev \
+            libmpfr-dev \
+            libncurses5-dev \
+            libltdl-dev \
+            wget \
+            p7zip-full
+
+      # --------------------------------------------------
+      # 3. Check source
+      # --------------------------------------------------
+      - name: Check source tree
+        run: |
+          echo "Repository:"
+          pwd
+
+          echo "Selected model:"
+          echo "${{ matrix.model }}"
+
+          echo "Checking model config..."
+
+          test -f "trunk/configs/templates/${{ matrix.model }}.config"
+
+          echo "Config found:"
+          ls -lh "trunk/configs/templates/${{ matrix.model }}.config"
+
+      # --------------------------------------------------
+      # 4. Download MIPS toolchain
+      # --------------------------------------------------
+      - name: Prepare toolchain
+        run: |
+          cd toolchain-mipsel
+
+          chmod +x dl_toolchain.sh
+
+          ./dl_toolchain.sh
+
+      # --------------------------------------------------
+      # 5. Optional tmate debug
+      # --------------------------------------------------
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_enabled == 'yes' }}
+        with:
+          limit-access-to-actor: true
+
+      # --------------------------------------------------
+      # 6. Build firmware
+      # --------------------------------------------------
+      - name: Build firmware
+        run: |
+          cd trunk
+
+          echo "=========================================="
+          echo "Building: ${{ matrix.model }}"
+          echo "=========================================="
+
+          ./clear_tree || true
+
+          fakeroot ./build_firmware_modify "${{ matrix.model }}" 0
+
+      # --------------------------------------------------
+      # 7. Check firmware
+      # --------------------------------------------------
+      - name: Check firmware
+        run: |
+          echo "=========================================="
+          echo "Build result"
+          echo "=========================================="
+
+          ls -lh trunk/images/
+
+          echo ""
+          echo "Firmware files:"
+          find trunk/images -maxdepth 1 -type f -name "*.trx" -print
+
+          test -n "$(find trunk/images -maxdepth 1 -type f -name '*.trx')"
+
+      # --------------------------------------------------
+      # 8. Generate MD5
+      # --------------------------------------------------
+      - name: Generate MD5
+        run: |
+          cd trunk/images
+
+          md5sum *.trx | tee md5sum.txt
+
+      # --------------------------------------------------
+      # 9. Package firmware
+      # --------------------------------------------------
+      - name: Create archive
+        run: |
+          mkdir -p output
+
+          cp trunk/images/*.trx output/
+          cp trunk/images/md5sum.txt output/
+
+          cd output
+
+          7z a -mx=9 "${{ matrix.name }}.7z" \
+            *.trx \
+            md5sum.txt
+
+          echo "Package:"
+          ls -lh
+
+      # --------------------------------------------------
+      # 10. Upload artifact
+      # --------------------------------------------------
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: output/${{ matrix.name }}.7z
+          retention-days: 30

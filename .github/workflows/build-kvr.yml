@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    name: Build KVR Firmware
+    name: Build ${{ matrix.model }}
     runs-on: ubuntu-22.04
 
     strategy:
@@ -25,15 +25,15 @@ jobs:
 
     steps:
 
-      # --------------------------------------------------
-      # 1. Checkout keke1023/Padavan
-      # --------------------------------------------------
+      # ============================================================
+      # 1. Checkout
+      # ============================================================
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # --------------------------------------------------
-      # 2. Install build dependencies
-      # --------------------------------------------------
+      # ============================================================
+      # 2. Install dependencies
+      # ============================================================
       - name: Prepare environment
         run: |
           sudo apt-get update
@@ -70,27 +70,46 @@ jobs:
             wget \
             p7zip-full
 
-      # --------------------------------------------------
-      # 3. Check source
-      # --------------------------------------------------
+      # ============================================================
+      # 3. Check source tree
+      # ============================================================
       - name: Check source tree
         run: |
-          echo "Repository:"
+          echo "=========================================="
+          echo "Repository"
+          echo "=========================================="
+
           pwd
+          git rev-parse --short HEAD
 
-          echo "Selected model:"
-          echo "${{ matrix.model }}"
+          echo ""
+          echo "Model: ${{ matrix.model }}"
 
-          echo "Checking model config..."
+          echo ""
+          echo "Checking build scripts..."
+
+          test -f trunk/build_firmware_modify
+          test -f trunk/build_firmware_ci
+
+          ls -lh trunk/build_firmware_modify
+          ls -lh trunk/build_firmware_ci
+
+          echo ""
+          echo "Checking model template..."
 
           test -f "trunk/configs/templates/${{ matrix.model }}.config"
 
-          echo "Config found:"
           ls -lh "trunk/configs/templates/${{ matrix.model }}.config"
 
-      # --------------------------------------------------
-      # 4. Download MIPS toolchain
-      # --------------------------------------------------
+          echo ""
+          echo "Checking PRODUCT_ID..."
+
+          grep '^CONFIG_FIRMWARE_PRODUCT_ID=' \
+            "trunk/configs/templates/${{ matrix.model }}.config"
+
+      # ============================================================
+      # 4. Download toolchain
+      # ============================================================
       - name: Prepare toolchain
         run: |
           cd toolchain-mipsel
@@ -99,59 +118,145 @@ jobs:
 
           ./dl_toolchain.sh
 
-      # --------------------------------------------------
-      # 5. Optional tmate debug
-      # --------------------------------------------------
+      # ============================================================
+      # 5. Optional tmate
+      # ============================================================
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_enabled == 'yes' }}
         with:
           limit-access-to-actor: true
 
-      # --------------------------------------------------
-      # 6. Build firmware
-      # --------------------------------------------------
+      # ============================================================
+      # 6. Prepare .config
+      # ============================================================
+      - name: Prepare firmware config
+        run: |
+          cd trunk
+
+          echo "=========================================="
+          echo "Preparing config"
+          echo "=========================================="
+
+          rm -f .config
+
+          cp -f \
+            "configs/templates/${{ matrix.model }}.config" \
+            .config
+
+          echo ""
+          echo "Generated .config:"
+          ls -lh .config
+
+          echo ""
+          echo "Important configuration:"
+          grep '^CONFIG_VENDOR=' .config
+          grep '^CONFIG_PRODUCT=' .config
+          grep '^CONFIG_FIRMWARE_PRODUCT_ID=' .config
+          grep '^CONFIG_LINUXDIR=' .config
+          grep '^CONFIG_FIRMWARE_WIFI_DRIVER=' .config
+          grep '^CONFIG_FIRMWARE_KERNEL_CONFIG=' .config
+
+          echo ""
+          echo "Checking board directory..."
+
+          BOARD_ID=$(sed -n 's/^CONFIG_FIRMWARE_PRODUCT_ID="\([^"]*\)"/\1/p' .config)
+
+          echo "BOARD_ID=${BOARD_ID}"
+
+          test -n "${BOARD_ID}"
+
+          test -d "configs/boards/${BOARD_ID}"
+
+          echo ""
+          echo "Board directory:"
+          ls -lh "configs/boards/${BOARD_ID}"
+
+          echo ""
+          echo "Kernel config:"
+          test -f "configs/boards/${BOARD_ID}/kernel-3.4.x-5.0.config"
+
+          ls -lh \
+            "configs/boards/${BOARD_ID}/kernel-3.4.x-5.0.config"
+
+      # ============================================================
+      # 7. Clean build tree
+      # ============================================================
+      - name: Clean build tree
+        run: |
+          cd trunk
+
+          echo "=========================================="
+          echo "Cleaning build tree"
+          echo "=========================================="
+
+          ./clear_tree
+
+          echo ""
+          echo "Checking .config after clear_tree..."
+
+          test -f .config
+
+          grep '^CONFIG_FIRMWARE_PRODUCT_ID=' .config
+
+      # ============================================================
+      # 8. Build firmware
+      # ============================================================
       - name: Build firmware
         run: |
           cd trunk
 
           echo "=========================================="
-          echo "Building: ${{ matrix.model }}"
+          echo "Building ${{ matrix.model }}"
           echo "=========================================="
 
-          ./clear_tree || true
+          echo ""
+          echo "Final config:"
+          grep '^CONFIG_VENDOR=' .config
+          grep '^CONFIG_PRODUCT=' .config
+          grep '^CONFIG_FIRMWARE_PRODUCT_ID=' .config
+          grep '^CONFIG_FIRMWARE_WIFI_DRIVER=' .config
+          grep '^CONFIG_FIRMWARE_KERNEL_CONFIG=' .config
 
-          fakeroot ./build_firmware_modify "${{ matrix.model }}" 0
+          echo ""
+          echo "Starting build..."
 
-      # --------------------------------------------------
-      # 7. Check firmware
-      # --------------------------------------------------
+          fakeroot ./build_firmware_modify "${{ matrix.model }}"
+
+      # ============================================================
+      # 9. Check firmware
+      # ============================================================
       - name: Check firmware
         run: |
           echo "=========================================="
           echo "Build result"
           echo "=========================================="
 
-          ls -lh trunk/images/
+          ls -lah trunk/images/
 
           echo ""
           echo "Firmware files:"
-          find trunk/images -maxdepth 1 -type f -name "*.trx" -print
+
+          find trunk/images \
+            -maxdepth 1 \
+            -type f \
+            -name "*.trx" \
+            -print
 
           test -n "$(find trunk/images -maxdepth 1 -type f -name '*.trx')"
 
-      # --------------------------------------------------
-      # 8. Generate MD5
-      # --------------------------------------------------
+      # ============================================================
+      # 10. MD5
+      # ============================================================
       - name: Generate MD5
         run: |
           cd trunk/images
 
           md5sum *.trx | tee md5sum.txt
 
-      # --------------------------------------------------
-      # 9. Package firmware
-      # --------------------------------------------------
+      # ============================================================
+      # 11. Package
+      # ============================================================
       - name: Create archive
         run: |
           mkdir -p output
@@ -161,16 +266,18 @@ jobs:
 
           cd output
 
-          7z a -mx=9 "${{ matrix.name }}.7z" \
+          7z a -mx=9 \
+            "${{ matrix.name }}.7z" \
             *.trx \
             md5sum.txt
 
+          echo ""
           echo "Package:"
           ls -lh
 
-      # --------------------------------------------------
-      # 10. Upload artifact
-      # --------------------------------------------------
+      # ============================================================
+      # 12. Upload
+      # ============================================================
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
